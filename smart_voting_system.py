@@ -3,15 +3,18 @@
 smart_voting_system.py
 Single-file prototype: Smart Voting Machine + Admin UI to add and manage voters.
 
-This version includes QR, Fingerprint, and Face Recognition verification.
-NEW FEATURE: Image Upload option added to Admin Add/Edit Voter pages for Face Data.
+
+This version is streamlined to only include QR and fingerprint verification,
+with all face recognition concepts removed.
+
 
 Run:
   1) python3 -m venv venv
-  2) source venv/bin/activate  (Unix)  or  venv\Scripts\activate (Windows)
+  2) source venv/bin/activate  (Unix)  or  venv\\Scripts\\activate (Windows)
   3) pip install Flask numpy
   4) python smart_voting_system.py
   5) Open http://127.0.0.1:5000  and http://127.0.0.1:5000/admin
+
 
 This is a demo. NOT secure for production.
 """
@@ -25,14 +28,9 @@ from pathlib import Path
 from flask import (Flask, flash, redirect, render_template_string, request,
                    send_file, session, url_for, jsonify)
 
-# --- NOTE: The original HTML/CSS/JS strings are defined right here in the actual file.
-# --- For clarity in this response, they are shown in separate blocks below.
 
 # App and DB config
 APP = Flask(__name__)
-# The HTML templates (e.g., ADMIN_LOGIN_HTML) would normally be imported or read here.
-# Since it's a single file, they are defined as constants above the Flask logic.
-
 APP.secret_key = os.environ.get("SVM_SECRET_KEY", "svm_demo_secret_key_change_me")
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "svm_admin.db"
@@ -42,8 +40,6 @@ DB_PATH = BASE / "svm_admin.db"
 ADMIN_USER = "poomalai005"
 ADMIN_PASS = "Poomalai2005@"
 VOTED_STATUS_PASSWORD = "989464"
-# ***Reset Votes Password***
-RESET_VOTES_PASSWORD = "Poomalai@989464"
 
 
 # Set up basic logging
@@ -63,7 +59,6 @@ def init_db():
     created = not DB_PATH.exists()
     conn = get_conn()
     c = conn.cursor()
-    # MODIFICATION: Added 'face_data' column to voters table
     c.execute("""
         CREATE TABLE IF NOT EXISTS voters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +67,6 @@ def init_db():
             dob TEXT,
             phone TEXT,
             fingerprint TEXT,
-            face_data TEXT,  
             has_voted INTEGER DEFAULT 0,
             created_at TEXT
         )
@@ -94,26 +88,6 @@ init_db()
 
 
 # Utility functions
-
-def get_vote_counts():
-    """Calculates and returns the total votes for each candidate."""
-    conn = get_conn()
-    # Use GROUP BY and COUNT() to get the totals for each candidate
-    votes = conn.execute("""
-        SELECT candidate, COUNT(id) as total_votes  
-        FROM votes  
-        GROUP BY candidate  
-        ORDER BY total_votes DESC
-    """).fetchall()
-    total_votes_cast = conn.execute("SELECT COUNT(id) FROM votes").fetchone()[0]
-    conn.close()
-    
-    # Convert results to a list of dictionaries for easier use
-    results = [{'candidate': row['candidate'], 'count': row['total_votes']} for row in votes]
-    
-    return results, total_votes_cast
-
-
 def calculate_age(dob_str):
     """Calculates age in years from a YYYY-MM-DD date string."""
     try:
@@ -134,12 +108,541 @@ def send_sms(to_number, message):
     logging.info(f"Simulating SMS to {to_number}: {message}")
 
 
-# --- Flask Routes (The Python logic continues with the routes) ---
+# --------------------
+# Admin pages (using render_template_string)
+# --------------------
+ADMIN_LOGIN_HTML = """
+<!doctype html>
+<title>Admin Login</title>
+<style>
+body{font-family: Arial; max-width: 500px; margin: 20px auto; padding: 15px; background-color: #000; color: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(255,255,255,0.1);}
+h2{color: #fff; text-align: center;}
+form{display: flex; flex-direction: column; gap: 10px;}
+input{padding: 10px; border-radius: 5px; border: 1px solid #555; background-color: #333; color: #fff;}
+button{padding: 10px; background-color: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer;}
+a{color: #3498db;}
+</style>
+<h2>Admin login</h2>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <ul>
+    {% for cat, msg in messages %}
+      <li><strong>{{ cat }}:</strong> {{ msg }}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+<form method="post">
+  <label>Username: <input name="username" required></label>
+  <label>Password: <input name="password" type="password" required></label>
+  <button type="submit">Login</button>
+</form>
+<p><a href="{{ url_for('index') }}">Back to Voting</a></p>
+"""
+
+
+ADMIN_ADD_HTML = """
+<!doctype html>
+<title>Add Voter</title>
+<style>
+body{font-family: Arial; max-width: 700px; margin: 20px auto; padding: 15px; background-color: #000; color: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(255,255,255,0.1);}
+h2{color: #fff; text-align: center;}
+p a{color: #3498db;}
+form{display: flex; flex-direction: column; gap: 10px;}
+label{font-weight: bold;}
+input{padding: 10px; border-radius: 5px; border: 1px solid #555; background-color: #333; color: #fff;}
+button{padding: 10px; background-color: #28a745; color: white; border: none; cursor: pointer;}
+</style>
+<h2>Admin — Add Voter</h2>
+<p><a href="{{ url_for('admin_list') }}">List voters</a> | <a href="{{ url_for('admin_logout') }}">Logout</a></p>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <ul>
+    {% for cat, msg in messages %}
+      <li><strong>{{ cat }}:</strong> {{ msg }}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+<form method="post">
+  <label>Voter QR ID (unique): <input name="voter_id" required></label>
+  <label>Name: <input name="name" required></label>
+  <label>DOB (YYYY-MM-DD): <input name="dob" required></label>
+  <label>Phone: <input name="phone"></label>
+  <label>Fingerprint template (text placeholder): <input name="fingerprint"></label>
+  <br>
+  <button type="submit">Add Voter</button>
+</form>
+"""
+
+
+ADMIN_EDIT_HTML = """
+<!doctype html>
+<title>Edit Voter</title>
+<style>
+body{font-family: Arial; max-width: 700px; margin: 20px auto; padding: 15px; background-color: #000; color: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(255,255,255,0.1);}
+h2{color: #fff; text-align: center;}
+p a{color: #3498db;}
+form{display: flex; flex-direction: column; gap: 10px;}
+label{font-weight: bold;}
+input{padding: 10px; border-radius: 5px; border: 1px solid #555; background-color: #333; color: #fff;}
+button{padding: 10px; background-color: #28a745; color: white; border: none; cursor: pointer;}
+</style>
+<h2>Admin — Edit Voter</h2>
+<p><a href="{{ url_for('admin_list') }}">List voters</a> | <a href="{{ url_for('admin_add') }}">Add voter</a> | <a href="{{ url_for('admin_logout') }}">Logout</a></p>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <ul>
+    {% for cat, msg in messages %}
+      <li><strong>{{ cat }}:</strong> {{ msg }}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+<form method="post">
+  <label>Voter QR ID: <input name="voter_id" value="{{ voter.voter_id }}" readonly></label>
+  <label>Name: <input name="name" value="{{ voter.name }}" required></label>
+  <label>DOB (YYYY-MM-DD): <input name="dob" value="{{ voter.dob }}" required></label>
+  <label>Phone: <input name="phone" value="{{ voter.phone }}"></label>
+  <label>Fingerprint template (text placeholder): <input name="fingerprint" value="{{ voter.fingerprint }}"></label>
+  <br>
+  <button type="submit">Update Voter</button>
+</form>
+"""
+
+
+ADMIN_LIST_HTML = """
+<!doctype html>
+<title>Voters</title>
+<style>
+body{font-family: Arial; max-width: 900px; margin: 20px auto; padding: 15px; background-color: #000; color: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(255,255,255,0.1);}
+h2{color: #fff; text-align: center;}
+p a{color: #3498db;}
+table{width: 100%; border-collapse: collapse; margin-top: 15px;}
+th, td{border: 1px solid #555; padding: 8px; text-align: left;}
+th{background-color: #333;}
+button{padding: 5px 10px; color: white; border: none; border-radius: 4px; cursor: pointer;}
+button.edit { background-color: #3498db; }
+button.delete { background-color: #dc3545; margin-left: 5px; }
+button.toggle { background-color: #555; margin-left: 5px; }
+.toggle-form { display: inline-flex; align-items: center; gap: 5px; }
+</style>
+<h2>Registered Voters</h2>
+<p><a href="{{ url_for('admin_add') }}">Add voter</a> | <a href="{{ url_for('admin_logout') }}">Logout</a></p>
+<table border="1" cellpadding="6">
+<tr><th>ID</th><th>Voter QR ID</th><th>Name</th><th>DOB</th><th>Phone</th><th>Has Voted</th><th>Actions</th></tr>
+{% for v in voters %}
+  <tr>
+    <td>{{ v.id }}</td>
+    <td>{{ v.voter_id }}</td>
+    <td>{{ v.name }}</td>
+    <td>{{ v.dob }}</td>
+    <td>{{ v.phone }}</td>
+    <td>{{ 'Yes' if v.has_voted else 'No' }}</td>
+    <td>
+      <a href="{{ url_for('admin_edit', voter_id=v.voter_id) }}"><button class="edit">Edit</button></a>
+      <form method="post" action="{{ url_for('admin_delete', voter_id=v.voter_id) }}" style="display:inline" onsubmit="return confirm('Delete voter?');">
+          <button class="delete" type="submit">Delete</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_update_voted_status', voter_id=v.voter_id) }}" class="toggle-form" onsubmit="return confirm('Change voted status for {{ v.voter_id }}?');">
+          <input type="password" name="password" placeholder="Password" style="width: 80px;" required>
+          <button class="toggle" type="submit">Toggle Voted</button>
+      </form>
+    </td>
+  </tr>
+{% endfor %}
+</table>
+"""
+
+
+# --------------------
+# Voting UI & API
+# --------------------
+INDEX_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Smart Voting</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+    
+    body {
+        font-family: 'Roboto', sans-serif;
+        max-width: 900px;
+        margin: 20px auto;
+        padding: 15px;
+        color: #fff;
+        line-height: 1.6;
+        background-color: #000;
+        border-radius: 12px;
+    }
+    .container {
+        background-color: #1a1a1a;
+        padding: 25px;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(255, 255, 255, 0.1);
+        transition: transform 0.3s ease;
+    }
+    .container:hover {
+        transform: translateY(-5px);
+    }
+    h1, h2, h3 {
+        color: #fff;
+        border-bottom: 2px solid #3498db;
+        padding-bottom: 5px;
+        margin-top: 20px;
+    }
+    h1 {
+        font-size: 3em;
+        color: #e6e9f0;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+    p {
+        color: #ccc;
+    }
+    .status-message {
+        font-weight: 700;
+        margin-top: 10px;
+        padding: 8px 12px;
+        border-radius: 5px;
+        border: 1px solid transparent;
+        transition: all 0.3s ease;
+        animation: fade-in 0.5s ease;
+    }
+    .status-message.success {
+        color: #2ecc71;
+        background-color: rgba(46, 204, 113, 0.2);
+        border-color: #2ecc71;
+    }
+    .status-message.error {
+        color: #e74c3c;
+        background-color: rgba(231, 76, 60, 0.2);
+        border-color: #e74c3c;
+    }
+    input, button {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid #555;
+        font-size: 16px;
+        transition: all 0.3s ease;
+    }
+    input {
+        flex-grow: 1;
+        margin-right: 10px;
+        background-color: #333;
+        color: #fff;
+    }
+    button {
+        background-color: #3498db;
+        color: white;
+        border: none;
+        cursor: pointer;
+        padding: 12px 25px;
+        box-shadow: 0 4px 6px rgba(52, 152, 219, 0.3);
+    }
+    button:hover {
+        background-color: #2980b9;
+        transform: translateY(-3px) scale(1.02);
+        box-shadow: 0 8px 15px rgba(52, 152, 219, 0.4);
+    }
+    button.candidate {
+        background-color: #e74c3c; /* Red for candidates */
+    }
+    button.candidate:hover {
+        background-color: #c0392b;
+        transform: translateY(-3px) scale(1.02);
+    }
+    .step-section {
+        margin-bottom: 25px;
+        padding: 20px;
+        border: 1px dashed #555;
+        border-radius: 10px;
+        transition: opacity 0.5s ease;
+    }
+    .flex-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    #reader {
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
+    }
+    
+    /* Custom Modal CSS */
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.6);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+    }
+    .modal-overlay.visible {
+        opacity: 1;
+        visibility: visible;
+    }
+    .modal-content {
+        background: #1a1a1a;
+        padding: 30px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        max-width: 400px;
+        width: 90%;
+        transform: translateY(-20px);
+        transition: transform 0.3s ease;
+    }
+    .modal-overlay.visible .modal-content {
+        transform: translateY(0);
+    }
+    .modal-content h3 {
+        margin-top: 0;
+        border-bottom: none;
+    }
+    .modal-buttons {
+        margin-top: 20px;
+        display: flex;
+        justify-content: center;
+        gap: 15px;
+    }
+    .modal-buttons button {
+        padding: 10px 20px;
+        font-weight: bold;
+    }
+    .modal-buttons button.confirm {
+        background-color: #3498db;
+    }
+    .modal-buttons button.cancel {
+        background-color: #e74c3c;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Smart Voting Machine</h1>
+    <p>Admin: <a href="{{ url_for('admin_login') }}">/admin</a></p>
+    <p>Admin should add voters first (with QR ID). You may also type a QR ID directly below for testing.</p>
+
+
+    <div id="voting-area">
+      <div id="step1" class="step-section">
+        <h3>1) Scan QR ID or Enter Manually</h3>
+        <div id="reader-container">
+            <p>Scan your voter QR code with the camera:</p>
+            <div id="reader"></div>
+        </div>
+        <br>
+        <p>Alternatively, enter the ID manually:</p>
+        <div class="flex-row">
+            <input id="qr-input" placeholder="Type Voter QR ID here" />
+            <button id="verify-qr-btn">Verify QR</button>
+        </div>
+        <p id="qr-status" class="status-message"></p>
+      </div>
+
+
+      <div id="details" class="step-section" style="display:none;">
+        <h3>Voter Details</h3>
+        <div id="voter-info"></div>
+        <button id="start-fp-btn">Proceed to Fingerprint</button>
+      </div>
+
+
+      <div id="fp" class="step-section" style="display:none;">
+        <h3>2) Fingerprint (Simulated)</h3>
+        <p>Please place your finger on the scanner.</p>
+        <div class="flex-row">
+            <input id="fp-input" placeholder="Type fingerprint payload" />
+            <button id="verify-fp-btn">Verify Fingerprint</button>
+        </div>
+        <p id="fp-status" class="status-message"></p>
+      </div>
+
+
+      <div id="voting" class="step-section" style="display:none;">
+        <h3>3) Select Candidate</h3>
+        <p>Please select your preferred candidate.</p>
+        <button class="candidate" data-name="Candidate A">Candidate A</button>
+        <button class="candidate" data-name="Candidate B">Candidate B</button>
+        <button class="candidate" data-name="Candidate C">Candidate C</button>
+        <p id="vote-status" class="status-message"></p>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="custom-modal-overlay" class="modal-overlay">
+    <div class="modal-content">
+        <h3 id="modal-message"></h3>
+        <div class="modal-buttons">
+            <button id="modal-confirm-btn" class="confirm">Confirm</button>
+            <button id="modal-cancel-btn" class="cancel">Cancel</button>
+        </div>
+    </div>
+  </div>
+
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script>
+// Basic flow variables
+let currentVoter = null;
+let html5QrcodeScanner = null;
+
+
+// Helper to set status message with style
+function setStatus(elementId, message, type = 'info') {
+    const el = document.getElementById(elementId);
+    el.textContent = message;
+    el.className = 'status-message ' + type;
+    el.style.display = 'block';
+}
+
+
+// Custom modal functions
+const modalOverlay = document.getElementById('custom-modal-overlay');
+const modalMessageEl = document.getElementById('modal-message');
+const modalConfirmBtn = document.getElementById('modal-confirm-btn');
+const modalCancelBtn = document.getElementById('modal-cancel-btn');
+
+
+function showConfirmModal(message, onConfirmCallback) {
+    modalMessageEl.textContent = message;
+    modalOverlay.classList.add('visible');
+    
+    // Clear previous event listeners
+    modalConfirmBtn.onclick = null;
+    modalCancelBtn.onclick = null;
+
+
+    modalConfirmBtn.onclick = () => {
+        onConfirmCallback();
+        modalOverlay.classList.remove('visible');
+    };
+    modalCancelBtn.onclick = () => {
+        modalOverlay.classList.remove('visible');
+    };
+}
+
+
+
+
+// Function to handle QR scan success
+function onScanSuccess(decodedText, decodedResult) {
+    if (html5QrcodeScanner) {
+        html5QrcodeScanner.clear();
+    }
+    document.getElementById('qr-input').value = decodedText;
+    verifyQrCode(decodedText);
+}
+
+
+// Function to handle QR scan failure
+function onScanFailure(error) {
+    console.warn(`Code scan error = ${error}`);
+}
+
+
+// Initialize QR code scanner
+function startQrScanner() {
+    html5QrcodeScanner = new Html5QrcodeScanner("reader", {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }
+    }, false);
+    html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+}
+
+
+window.addEventListener('load', startQrScanner);
+
+
+async function verifyQrCode(qr) {
+    if (!qr) { setStatus('qr-status', 'Error: Enter a QR ID.', 'error'); return; }
+    const res = await fetch('/api/verify_qr', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({voter_id: qr})});
+    const j = await res.json();
+    if (j.ok) {
+        currentVoter = j.voter;
+        setStatus('qr-status', `QR OK. Welcome, ${currentVoter.name}.`, 'success');
+        document.getElementById('voter-info').innerHTML = `<strong>Name:</strong> ${currentVoter.name}<br><strong>DOB:</strong> ${currentVoter.dob}<br><strong>Phone:</strong> ${currentVoter.phone}`;
+        document.getElementById('details').style.display = 'block';
+        document.getElementById('step1').style.display = 'none';
+    } else {
+        setStatus('qr-status', 'Error: ' + (j.detail || 'unknown error'), 'error');
+        // Auto-refresh on error
+        setTimeout(() => { window.location.reload(); }, 3000);
+    }
+}
+
+
+// Verify QR ID by server for manual input
+document.getElementById('verify-qr-btn').onclick = () => {
+    const qr = document.getElementById('qr-input').value.trim();
+    if (html5QrcodeScanner) {
+        html5QrcodeScanner.clear();
+    }
+    verifyQrCode(qr);
+}
+
+
+// Fingerprint stage (simulated string match)
+document.getElementById('start-fp-btn').onclick = () => {
+    document.getElementById('fp').style.display = 'block';
+    document.getElementById('details').style.display = 'none';
+}
+
+
+document.getElementById('verify-fp-btn').onclick = async () => {
+    const payload = document.getElementById('fp-input').value.trim();
+    if (!payload) { setStatus('fp-status', 'Error: Enter fingerprint payload.', 'error'); return; }
+    const res = await fetch('/api/verify_fingerprint', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({voter_id: currentVoter.voter_id, fp_payload: payload})});
+    const j = await res.json();
+    if (j.ok) {
+        setStatus('fp-status', 'Fingerprint OK!', 'success');
+        document.getElementById('voting').style.display = 'block';
+        document.getElementById('fp').style.display = 'none';
+    } else {
+        setStatus('fp-status', 'Fingerprint verification failed.', 'error');
+        setTimeout(() => { window.location.reload(); }, 3000);
+    }
+}
+
+
+// Voting
+Array.from(document.getElementsByClassName('candidate')).forEach(btn => {
+    btn.onclick = () => {
+        showConfirmModal(`Confirm vote for ${btn.dataset.name}?`, async () => {
+            const res = await fetch('/api/cast_vote', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({voter_id: currentVoter.voter_id, candidate: btn.dataset.name})});
+            const j = await res.json();
+            if (j.ok) {
+                setStatus('vote-status', `Vote for ${btn.dataset.name} has been cast!`, 'success');
+                setTimeout(() => { window.location.reload(); }, 3000); // Reload after 3s
+            } else {
+                setStatus('vote-status', 'Error: ' + (j.error || j.detail || 'unknown'), 'error');
+                // Auto-refresh on error
+                setTimeout(() => { window.location.reload(); }, 3000);
+            }
+        });
+    }
+});
+</script>
+</body>
+</html>
+"""
+
 
 @APP.route("/")
 def index():
     """Renders the main voting machine UI."""
-    # This would use the INDEX_HTML string defined in the full file
     return render_template_string(INDEX_HTML)
 
 
@@ -158,8 +661,7 @@ def api_verify_qr():
         return jsonify(ok=False, error="not_registered", detail="Contact Admin or NOT Registered"), 404
     age = calculate_age(r["dob"])
     if age < 18:
-        return jsonify(ok=False, error="underage", age=age, detail="You are Not eligible for voting (Under 18)."), 403
-    
+        return jsonify(ok=False, error="underage", age=age), 403
     voter = {"voter_id": r["voter_id"], "name": r["name"], "dob": r["dob"], "phone": r["phone"], "has_voted": bool(r["has_voted"])}
     return jsonify(ok=True, voter=voter)
 
@@ -178,31 +680,7 @@ def api_verify_fingerprint():
     if not r:
         return jsonify(ok=False, error="voter_not_found"), 404
     stored = r["fingerprint"] or ""
-    # Simulation: payload must match the stored fingerprint (which is voter_id in this demo)
-    ok = (fp_payload == stored) 
-    return jsonify(ok=bool(ok))
-
-
-@APP.route("/api/verify_face", methods=["POST"])
-def api_verify_face():
-    """
-    API endpoint for face recognition verification.
-    """
-    data = request.get_json(force=True)
-    voter_id = data.get("voter_id", "").strip()
-    face_payload = data.get("face_payload")
-    if not voter_id or face_payload is None:
-        return jsonify(ok=False, error="missing_data"), 400
-    conn = get_conn()
-    r = conn.execute("SELECT face_data FROM voters WHERE voter_id=?", (voter_id,)).fetchone()
-    conn.close()
-    if not r:
-        return jsonify(ok=False, error="voter_not_found"), 404
-    
-    stored = r["face_data"] or ""
-    # Simulation: payload must match the stored face_data (which is voter_id in this demo)
-    ok = (face_payload == stored) 
-    
+    ok = (fp_payload == stored)
     return jsonify(ok=bool(ok))
 
 
@@ -219,10 +697,9 @@ def api_cast_vote():
     if not r:
         conn.close()
         return jsonify(ok=False, error="voter_not_found"), 404
-        
     if r["has_voted"]:
         conn.close()
-        return jsonify(ok=False, error="already_voted", detail="This voter has already cast a vote and cannot vote again."), 403
+        return jsonify(ok=False, error="already_voted"), 403
 
 
     # Check for phone number before committing the vote
@@ -253,7 +730,6 @@ def admin_login():
     """Admin login page."""
     if session.get("admin"):
         return redirect(url_for("admin_list"))
-    # This would use the ADMIN_LOGIN_HTML string
     return render_template_string(ADMIN_LOGIN_HTML)
 
 
@@ -286,7 +762,6 @@ def admin_list():
     conn = get_conn()
     voters = conn.execute("SELECT * FROM voters").fetchall()
     conn.close()
-    # This would use the ADMIN_LIST_HTML string
     return render_template_string(ADMIN_LIST_HTML, voters=voters)
 
 
@@ -301,14 +776,11 @@ def admin_add():
         dob = request.form.get("dob")
         phone = request.form.get("phone")
         fingerprint = request.form.get("fingerprint")
-        # Get face_data from hidden input (captured by JS)
-        face_data = request.form.get("face_data")  
         conn = get_conn()
         try:
-            # MODIFIED: Insert face_data into the database
             conn.execute(
-                "INSERT INTO voters (voter_id, name, dob, phone, fingerprint, face_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (voter_id, name, dob, phone, fingerprint, face_data, datetime.utcnow().isoformat())
+                "INSERT INTO voters (voter_id, name, dob, phone, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (voter_id, name, dob, phone, fingerprint, datetime.utcnow().isoformat())
             )
             conn.commit()
             flash(f"Voter {name} added successfully!", "success")
@@ -317,7 +789,6 @@ def admin_add():
         finally:
             conn.close()
         return redirect(url_for("admin_add"))
-    # This would use the ADMIN_ADD_HTML string
     return render_template_string(ADMIN_ADD_HTML)
 
 
@@ -337,19 +808,15 @@ def admin_edit(voter_id):
         dob = request.form.get("dob")
         phone = request.form.get("phone")
         fingerprint = request.form.get("fingerprint")
-        # Get face_data from hidden input (captured by JS)
-        face_data = request.form.get("face_data")
-        # MODIFIED: Update face_data in the database
         conn.execute(
-            "UPDATE voters SET name=?, dob=?, phone=?, fingerprint=?, face_data=? WHERE voter_id=?",
-            (name, dob, phone, fingerprint, face_data, voter_id)
+            "UPDATE voters SET name=?, dob=?, phone=?, fingerprint=? WHERE voter_id=?",
+            (name, dob, phone, fingerprint, voter_id)
         )
         conn.commit()
         flash(f"Voter {voter_id} updated successfully!", "success")
         conn.close()
         return redirect(url_for("admin_list"))
     conn.close()
-    # This would use the ADMIN_EDIT_HTML string
     return render_template_string(ADMIN_EDIT_HTML, voter=voter)
 
 
@@ -387,54 +854,6 @@ def admin_update_voted_status(voter_id):
         flash("Voter not found.", "error")
     conn.close()
     return redirect(url_for("admin_list"))
-
-
-@APP.route("/admin/analytics")
-def admin_analytics():
-    """Displays vote analytics and counts per candidate."""
-    if not session.get("admin"):
-        return redirect(url_for("admin_login"))
-        
-    results, total_votes = get_vote_counts()
-    
-    # This would use the ADMIN_ANALYTICS_HTML string
-    return render_template_string(ADMIN_ANALYTICS_HTML, 
-                                  vote_results=results, 
-                                  total_votes=total_votes)
-
-# ***ROUTE: Handle Resetting Votes***
-@APP.route("/admin/analytics/reset", methods=["POST"])
-def admin_reset_votes():
-    """Resets all votes and voter statuses based on password verification."""
-    if not session.get("admin"):
-        return redirect(url_for("admin_login"))
-        
-    password = request.form.get("password")
-    
-    if password != RESET_VOTES_PASSWORD:
-        flash("Incorrect password. Votes and voter statuses were NOT reset.", "error")
-        return redirect(url_for("admin_analytics"))
-        
-    conn = get_conn()
-    try:
-        # 1. Delete all records from the 'votes' table
-        conn.execute("DELETE FROM votes")
-        
-        # 2. Reset the 'has_voted' status for all voters
-        conn.execute("UPDATE voters SET has_voted=0")
-        
-        conn.commit()
-        
-        logging.info("ALL VOTES AND VOTER STATUSES HAVE BEEN RESET.")
-        flash("SUCCESS: All votes have been reset, and all voters can vote again.", "success")
-    except Exception as e:
-        conn.rollback()
-        logging.error(f"Error during vote reset: {e}")
-        flash(f"Error resetting votes: {e}", "error")
-    finally:
-        conn.close()
-        
-    return redirect(url_for("admin_analytics"))
 
 
 # Start
